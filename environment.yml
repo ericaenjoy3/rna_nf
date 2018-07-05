@@ -1,0 +1,26 @@
+name: rna
+channels:
+  - conda-forge
+  - defaults
+  - bioconda
+  - golobor
+  - defaults
+dependencies:
+  - python=2.7
+  - parallel
+  - seqtk
+  - setuptools
+  - pip
+  - cython
+  - numpy
+  - fastqc
+  - sra-tools=2.9.1
+  - samtools=1.8
+  - sambamba=0.6.6
+  - tophat=2.1.1
+  - bowtie2=2.3.4.1
+  - hisat2=2.1.0
+  - rseqc=2.6.4
+  - kallisto=0.44.0
+  - r-sleuth=0.29.0
+  - salmon=0.10.2
