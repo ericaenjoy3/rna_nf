@@ -2,28 +2,14 @@
 # provide paths to your raw input data (fastq-s):
 #######################################
 input:
-  tophat_strand:
+  tophat_strand_string: fr-firststrand
   raw_fastq_dir:
     D1:
       - /home/yiyuan/Desktop/D1/D1.sub.R1.fastq.gz
+      - /home/yiyuan/Desktop/D1/D1.sub.R2.fastq.gz
     D2:
-      - /home/yiyuan/Desktop/D2/D2.sub.R1.fastq.gz
-      - /home/yiyuan/Desktop/D2/D2.sub.R2.fastq.gz
-    # independent libraries can be combined together
-    # on the level of bam files
-    # describe your groupings of choice here:
-  bam_combine:
-    libraries_1_and_2:
-      - D1
-      - D2
-    all_libraries:
-      - D1
-      - D2
-  sample_grouping:
-    case:
-      - D1
-    control:
-      - D2
+      - /home/yiyuan/Desktop/D1/D1.sub.R1.fastq.gz
+      - /home/yiyuan/Desktop/D1/D1.sub.R2.fastq.gz
 
 ########################################
 # sequence fasta files
@@ -44,11 +30,13 @@ annotation:
 ########################################
 reference:
     base_dir: "/home/yiyuan/Data/Ref/mm10/"
+    build_string: "mm10"
     salmon_dir: "salmon_ref"
     star_dir: "star_ref"
     star_sjdbOverhang_integer: 99
     tophat_bowtie2_dir: "bt2_ref"
 
+# or on the cluster use scratch directory (for example, /hpc/users/liuy22/scratch)
 intermediates:
     base_dir: "/home/yiyuan/Data/Pipeline/Inter"
 
@@ -57,20 +45,27 @@ output:
     fastqc_dir: 'fastqc'
     salmon_dir: "salmon_res"
     star_dir: "star_res"
+    fastqc_dir: "fastqc_res"
+    bamqc_dir: "bamqc_res"
+    featurecounts_dir: "cnt_res"
 
 ########################################
 # sambamba or samtools
 ########################################
 tools:
     samtools_sambamba_string: "sambamba"
+    sortIntervalByGivenChrOrder_perl_file: "/home/yiyuan/Downloads/picard/sortIntervalByGivenChrOrder.pl"
 
 ########################################
 # computational steps
 ########################################
 compute:
+    run_fastqc_boolean: false
     run_star_index_boolean: false
     run_star_boolean: false
-    run_tophat_bowtie2_index_boolean: true
+    run_bowtie2_index_boolean: false
     run_tophat_boolean: true
     run_salmon_index_boolean: false
     run_salmon_boolean: false
+    run_bamqc_boolean: false
+    run_featurecounts_boolean: false

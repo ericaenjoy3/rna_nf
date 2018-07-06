@@ -5,6 +5,8 @@ channels:
   - bioconda
   - golobor
   - defaults
+  - auto
+  - bcbio
 dependencies:
   - python=2.7
   - parallel
@@ -14,6 +16,9 @@ dependencies:
   - cython
   - numpy
   - fastqc
+  - multiqc
+  - afterqc
+  - fastqp=0.1.0
   - sra-tools=2.9.1
   - samtools=1.8
   - sambamba=0.6.6
@@ -24,3 +29,5 @@ dependencies:
   - kallisto=0.44.0
   - r-sleuth=0.29.0
   - salmon=0.10.2
+  - picard=2.18.7
+  - ucsc-gtftogenepred=366

@@ -19,12 +19,12 @@ import java.nio.file.*
  * Nextflow Version check
  */
 try {
-    if( !nextflow.version.matches('0.26+') ){
+    if( !nextflow.version.matches('0.30+') ){
         throw GroovyException('This workflow requires Nextflow version 0.26 or greater.')
     }
 } catch (all) {
     log.error "====================================================\n" +
-              "  Nextflow version 0.26 or greater required! You are running v$nextflow.version.\n" +
+              "  Nextflow version 0.30 or greater required! You are running v$nextflow.version.\n" +
               "  Pipeline execution will continue, but things may break.\n" +
               "  Please run `nextflow self-update` to update Nextflow.\n" +
               "============================================================"
@@ -58,7 +58,7 @@ def action = { params, l1, l2, indicator ->
 	switch (indicator){
 		case ~/(string|integer)/:
 			return params[l1].get(l2, '')
-		case ~/file/:
+		case ~/(file|dir)/:
 			return new File(params[l1].get(l2, '')).getCanonicalPath()
 		case ~/boolean/:
 			return params[l1].get(l2, 'false').toBoolean()
@@ -69,7 +69,7 @@ def action = { params, l1, l2, indicator ->
 	}
 }
 
-def testBoolean = { it -> "true".equals(it) || "false".equals(it) }
+def testBoolean = { it -> it instanceof Boolean }
 def testInteger = { it -> it.toString().isInteger()}
 
 /*
@@ -137,7 +137,7 @@ def call_validSetting(m) {
 
 }
 
-params.keySet().findAll { it -> !(it =~ /(?i)input/) }.each {k -> call_validSetting(params[k])}
+params.keySet().findAll { it -> !(it =~ /(?i)(input|picard)/) }.each {k -> call_validSetting(params[k])}
 
 /*
  * sanity check for samtools_sambamba_string
@@ -149,6 +149,18 @@ if (!(action.call(params, 'tools', 'samtools_sambamba_string', 'string') in ['sa
 }
 
 /*
+ * sanity check for tophat_strand_string
+ */
+strand = action.call(params, 'input', 'tophat_strand_string', 'string')
+
+if (!(strand instanceof String && strand in ['fr-unstranded', 'fr-firststrand', 'fr-secondstrand'])) {
+
+	throw new IllegalArgumentException("tophat_strand_string (" +
+	strand + ") is not in fr-unstranded, fr-firststrand or fr-secondstrand")
+
+}
+
+/*
  * Process reads
  */
 LIB_RUN_LOCAL_FASTQS = Channel.from(
@@ -156,29 +168,62 @@ LIB_RUN_LOCAL_FASTQS = Channel.from(
 
 LIB_RUN_LOCAL_FASTQS
   .map { v -> [v[0], v[1].collect{file(it)}] }
-  .into {SALMON_FQ; STAR_FQ; TOPHAT_FQ, TEST_FQ}
+  .into {FASTQC_FQ; SALMON_FQ; STAR_FQ; TOPHAT_FQ; TEST_FQ}
 
-TEST_FQ.subscribe {println it}
+// TEST_FQ.subscribe {println it}
 
-TRANS_FA = Channel.fromPath(action.call(params, 'fasta', 'transcript', 'file'))
-	.ifEmpty { exit 1, "Index not found: " + action.call(params, 'fasta', 'transcript', 'file')}
+TRANS_FA = Channel.fromPath(action.call(params, 'fasta', 'transcript_file', 'file'))
+	.ifEmpty { exit 1, "Index not found: " + action.call(params, 'fasta', 'transcript_file', 'file')}
 (SALMON_TRANS_FA) = TRANS_FA.into(1)
 
-GENOME_FA = Channel.fromPath(action.call(params, 'fasta', 'genome', 'file'))
-	.ifEmpty { exit 1, "Index not found: " + action.call(params, 'fasta', 'genome', 'file')}
+GENOME_FA = Channel.fromPath(action.call(params, 'fasta', 'genome_file', 'file'))
+	.ifEmpty { exit 1, "Index not found: " + action.call(params, 'fasta', 'genome_file', 'file')}
 (STAR_GENOME_FA, BOWTIE2_GENOME_FA,
-	TOPHAT_GENOME_FA) = GENOME_FA.into(3)
+	TOPHAT_GENOME_FA, PICARD_ALIGN_GENOME_FA,
+	PICARD_SEQ_GENOME_FA, CHRSIZE_FA) = GENOME_FA.into(6)
 
-GTF = Channel.fromPath(action.call(params, 'annotation', 'gtf', 'file'))
-	.ifEmpty { exit 1, "Index not found: " + action.call(params, 'annotation', 'gtf', 'file')}
-(STAR_GTF, TOPHAT_GTF) = GTF.into(2)
+GTF = Channel.fromPath(action.call(params, 'annotation', 'gtf_file', 'file'))
+	.ifEmpty { exit 1, "Index not found: " + action.call(params, 'annotation', 'gtf_file', 'file')}
+(STAR_GTF, TOPHAT_GTF, REFFLAT_GTF, RRNA_GTF, CNT_GTF) = GTF.into(5)
 
 if (action.call(params, 'tools', 'samtools_sambamba_string', 'string')) {
 	bamIndex_tool = Channel.from(action.call(params, 'tools', 'samtools_sambamba_string', 'string'))
 	(STAR_BAM_INDEX_TOOL, TOPHAT_BAM_INDEX_TOOL) = bamIndex_tool.into(2)
 }
+
 /*
- * Step 1: Build STAR/tophat/salmon/kallisto index if non-existent
+ * Step 1: FastQC
+ */
+process fastQC {
+
+	label 'multiCore'
+
+	tag "fastQC $sample"
+
+	publishDir path: concatDir(getDir('output', 'base_dir', params, canonPath = true),
+		getDir('output', 'fasqc_dir', params, canonPath = false)),
+		mode:"copy", saveAs: {
+			return joinPath("$sample", it)
+		}
+
+	input:
+	set val(sample), file(reads) from FASTQC_FQ
+
+	output:
+	file "*.html" into FASTQC_STAR, FASTQC_TOPHAT, FASTQC_SALMON
+
+	when:
+	action.call(params, 'compute', 'run_fastqc_boolean', 'boolean')
+
+	script:
+	threads = task.cpus
+	"""
+	fastqc --threads ${threads} --outdir . ${reads[0]} ${reads[1]}
+	"""
+}
+
+/*
+ * Step 2: Build STAR/tophat/salmon/kallisto index if non-existent
  */
 // salmon index process
 process salmonIndex {
@@ -204,11 +249,12 @@ process salmonIndex {
 	gencode = action.call(params, 'annotation', 'gencode_boolean', 'boolean')
 
 	if (!testBoolean.call(gencode)) {
+		println ""
 		throw new IllegalArgumentException("gencode_boolean (" + gencode + ") is not Boolean")
 	}
 
   switch (gencode) {
-    case true:
+    case ~/(?i)true/:
       gencode_flag = '--gencode'
       break
     default:
@@ -248,7 +294,7 @@ process startIndex {
 	sjdbOverhang = action.call(params, 'reference', 'star_sjdbOverhang_integer', 'integer')
 
 	if (!testInteger.call(sjdbOverhang)) {
-		throw new IllegalArgumentException("sjdbOverhang ("sjdbOverhang + ") is not Integer")
+		throw new IllegalArgumentException("sjdbOverhang (" + sjdbOverhang + ") is not Integer")
 	}
 
   threads = 1
@@ -271,15 +317,14 @@ process bowtie2Index {
 
 	tag "bowtie2Index"
 
-	publishDir path: getDir('reference', 'base_dir', params, canonPath = true), mode:"copy", saveAs: {
-		return getDir('reference', 'tophat_bowtie2_dir', params, canonPath = false)
-	}
+	publishDir path: concatDir(getDir('reference', 'base_dir', params, canonPath = true),
+		getDir('reference', 'tophat_bowtie2_dir', params, canonPath = false)), mode:"copy"
 
   input:
   file fa from BOWTIE2_GENOME_FA
 
   output:
-  file "genome_bt2.*" into BOWTIE2_INDEX
+  file "*" into BOWTIE2_INDEX
 
 	when:
 	action.call(params, 'compute', 'run_bowtie2_index_boolean', 'boolean')
@@ -317,26 +362,27 @@ process starAlign {
 
 	publishDir path: joinPath(getDir('output', 'base_dir', params, canonPath = true),
 		getDir('output', 'star_dir', params, canonPath = false)),
-		mode: "copy", saveAs: {
+		mode: "copy", overwrite: true, saveAs: {
 
 			switch (it) {
 				case { it.endsWith('.bam' ) }:
-					return joinPath("$sample", "${sample}.bam"
-				case { it.endsWith('.bam.bai')}:
+					return joinPath("$sample", "${sample}.bam")
+				case { it.endsWith('.bam.bai') }:
 					return joinPath("$sample", "${sample}.bam.bai")
 				default:
-					return "$sample" + it
+					return joinPath("$sample", it)
 			}
 
 		}
 
   input:
-  file index from STAR_INDEX.collect()
+  file index from STAR_INDEX.first()
   set val(sample), file(reads) from STAR_FQ
 	val tool from STAR_BAM_INDEX_TOOL
 
   output:
   set val(sample), file("${sample}_Aligned.sortedByCoord.out.bam") into STAR_BAM
+	file("*") into STAR_ALL
 
 	when:
 	action.call(params, 'compute', 'run_star_boolean', 'boolean')
@@ -353,7 +399,7 @@ process starAlign {
 			flag = ''
 			break
 		default:
-			throw new IllegalArgumentException( "Can't accept the samtools_sambamba_string: " + toools)
+			throw new IllegalArgumentException( "Can't accept the samtools_sambamba_string: " + tool)
 	}
 
   if (single) {
@@ -376,9 +422,7 @@ process starAlign {
 				 --outFilterType BySJout \
 				 --alignSJoverhangMin 8 \
 				 --alignSJDBoverhangMin 1 \
-				 --outFileNamePrefix "${sample}_"
-
-			${tool} index ${flag} ${sample}_Aligned.sortedByCoord.out.bam
+				 --outFileNamePrefix "${sample}_" && ${tool} index ${flag} ${sample}_Aligned.sortedByCoord.out.bam
     """
   } else {
     """
@@ -399,9 +443,7 @@ process starAlign {
 					 --outFilterType BySJout \
 					 --alignSJoverhangMin 8 \
 					 --alignSJDBoverhangMin 1 \
-					 --outFileNamePrefix "${sample}_"
-
-			${tool} index ${flag} ${sample}_Aligned.sortedByCoord.out.bam
+					 --outFileNamePrefix "${sample}_" && ${tool} index ${flag} ${sample}_Aligned.sortedByCoord.out.bam
     """
   }
 
@@ -418,8 +460,9 @@ if (!action.call(params, 'compute', 'run_tophat_bowtie2_index_boolean', 'boolean
 
 		println "pre-built bowtie2 index: " + idx_filename
 
-		BOWTIE2_INDEX = Channel.fromPath("${idx_filename}")
+		BOWTIE2_INDEX = Channel.fromPath("${idx_filename}/*")
 			.ifEmpty { exit 1, "Index not found: ${idx_filename}" }
+			.collect()
 }
 
 process tophatAlign {
@@ -427,38 +470,37 @@ process tophatAlign {
 	label 'multiCore'
 
 	tag "tophatAlign: $sample"
-
+	echo true
 	publishDir path: joinPath(getDir('output', 'base_dir', params, canonPath = true),
 		getDir('output', 'tophat_dir', params, canonPath = false)),
 		mode: "copy", saveAs: {
 
 			switch (it) {
 				case { it.endsWith('.bam' ) }:
-					return joinPath("$sample", "${sample}.bam"
+					return joinPath("$sample", "${sample}.bam")
 				case { it.endsWith('.bam.bai')}:
 					return joinPath("$sample", "${sample}.bam.bai")
 				default:
-					return "$sample" + it
+					return joinPath("$sample", it)
 			}
 
 		}
 
   input:
-  file index from BOWTIE2_INDEX.collect()
-	file fa from TOPHAT_GENOME_FA
-	file gtf from TOPHAT_GTF
+	file index from BOWTIE2_INDEX
+	file gtf from TOPHAT_GTF.first()
   set val(sample), file(reads) from TOPHAT_FQ
-	val tool from TOPHAT_BAM_INDEX_TOOL
+	val tool from TOPHAT_BAM_INDEX_TOOL.first()
 
   output:
   set val(sample), file("accepted_hits.bam") into TOPHAT_BAM
+	file("*") into TOPHAT_ALL
 
 	when:
 	action.call(params, 'compute', 'run_tophat_boolean', 'boolean')
 
   script:
 	threads = task.cpus
-	strand = action.call(params, 'input', 'tophat_strand', 'string')
 
 	switch (tool){
 		case 'sambamba':
@@ -468,15 +510,12 @@ process tophatAlign {
 			flag = ''
 			break
 		default:
-			throw new IllegalArgumentException( "Can't accept the samtools_sambamba_string: " + toools)
+			throw new IllegalArgumentException( "Can't accept the samtools_sambamba_string: " + tool)
 	}
 
-	if (!(strand instanceof String && strand in ['fr-unstranded', 'fr-firststrand', 'fr-secondstrand'])) {
-		throw new IllegalArgumentException("tophat_strand (" +
-		strand + ") is not in fr-unstranded, fr-firststrand or fr-secondstrand")
-	}
-
+	println "index: " + index
 	index_base = index[0].toString() - ~/.\d.bt2/
+	println "index_base: " + index_base
   def single = reads instanceof Path
   threads = task.cpus
   if (single) {
@@ -487,25 +526,21 @@ process tophatAlign {
 			tophat -p ${threads} \
 				-G ${gtf} \
 				--no-novel-juncs \
-				-o ${sample} \
+				-o . \
 				--library-type ${strand} \
-				${index_base} ${reads}
-
-			${tool} index ${flag} accepted_hits.bam
+				${index_base} ${reads} && ${tool} index ${flag} accepted_hits.bam
     """
   } else {
     """
-
+			echo ${reads}
 	    echo "\n===\nProcessing tophatAlign\n===\nR1: ${reads[0]} and R2: ${reads[1]}\n===\n"
 
 			tophat -p ${threads} \
 				-G ${gtf} \
 				--no-novel-juncs \
-				-o ${sample} \
+				-o . \
 				--library-type ${strand} \
-				${index_base} ${reads[0]} ${reads[1]}
-
-			${tool} index ${flag} accepted_hits.bam
+				${index_base} ${reads[0]} ${reads[1]} && ${tool} index ${flag} accepted_hits.bam
     """
   }
 }
@@ -516,11 +551,252 @@ process tophatAlign {
 // collect bam files
 STAR_BAM
 	.mix(TOPHAT_BAM)
-	.set{BAM_NO_QC}
+	.into {BAM_2CNT; BAM_2ALIGN_STATS; BAM_2SEQ_STATS; BAM_TEST}
+
+// BAM_TEST.subscribe {println it}
+
+// alignmentMetrics process
+process alignmentMetrics {
+
+	label 'singleCore'
+
+	tag "alignmentMetrics $sample"
+
+	publishDir path: joinPath(getDir('output', 'base_dir', params, canonPath = true),
+		getDir('output', 'bamqc_dir', params, canonPath = false)),
+		mode: "copy", saveAs: {
+			return joinPath("$sample", it)
+		}
+
+	input:
+	set val(sample), file(bam) from BAM_2ALIGN_STATS
+	file fa from PICARD_ALIGN_GENOME_FA.collect()
+
+	output:
+	file "${sample}.CollectAlignmentSummaryMetrics.txt" into ALIGN_STATS
+
+	when:
+	action.call(params, 'compute', 'run_bamqc_boolean', 'boolean')
+
+	script:
+	tmp_dir = getDir('intermediates', 'base_dir', params, canonPath = true)
+	"""
+		picard CollectAlignmentSummaryMetrics \
+	    	VALIDATION_STRINGENCY=LENIENT \
+		    MAX_RECORDS_IN_RAM=4000000 \
+		    ASSUME_SORTED=true \
+		    ADAPTER_SEQUENCE= \
+		    IS_BISULFITE_SEQUENCED=false \
+		    MAX_INSERT_SIZE=100000 \
+		    R=${fa} \
+		    INPUT=${bam} \
+		    OUTPUT=${sample}.CollectAlignmentSummaryMetrics.txt \
+		    TMP_DIR="${tmp_dir}/"
+	"""
+}
+
+// refFlat process
+process refFlat {
+
+	label 'singleCore'
+
+	tag "refFlat"
+
+	input:
+	file gtf from REFFLAT_GTF
+
+	output:
+	file "refFlat.txt" into REFFlat_FOUT
+
+	when:
+	action.call(params, 'compute', 'run_bamqc_boolean', 'boolean')
+
+	shell:
+	'''
+		gtfToGenePred \
+			-genePredExt \
+			-geneNameAsName2 \
+			-ignoreGroupsWithoutExons !{gtf}  /dev/stdout | \
+			awk 'BEGIN { OFS="\\t"} {print $12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10}' \
+			> refFlat.txt
+	'''
+}
+
+// fetchChrSize process
+process fetchChrSize {
+
+	label 'singleCore'
+
+	tag "fetchChrSize"
+
+	input:
+	file fa from CHRSIZE_FA
+
+	output:
+	file "chrom_size.txt" into CHRSIZE
+
+	when:
+	action.call(params, 'compute', 'run_bamqc_boolean', 'boolean')
+
+	shell:
+	'''
+		samtools faidx !{fa}
+		cut -f1,2 !{fa}.fai > chrom_size.txt
+	'''
+}
+
+// rRNAInterval process
+process rRNAInterval {
+
+	label 'singleCore'
+
+	tag "rRNAInterval"
+
+	input:
+	file "chrom_size.txt" from CHRSIZE
+	file gtf from RRNA_GTF.collect()
+
+	output:
+	file "rrna_interval.txt" into RRNA
+
+	when:
+	action.call(params, 'compute', 'run_bamqc_boolean', 'boolean')
+
+	shell:
+	tool = action.call(params, 'tools', 'sortIntervalByGivenChrOrder_perl_file', 'file')
+	if (!new File(tool).exists()) {
+		throw new IllegalArgumentException( "sortIntervalByGivenChrOrder_perl_file under 'tools' does not exist: " + tool)
+	}
+	'''
+	echo "@HD	VN:1.4" > rrna_interval.txt
+	perl -lane 'print "\\@SQ\\tSN:$F[0]\\tLN:$F[1]\\tAS:$genomeName"' chrom_size.txt | grep -v _ >> rrna_interval.txt
+
+	grep 'gene_type "rRNA"' !{gtf} |  awk '$3 == "transcript"' |  cut -f1,4,5,7,9 | \
+		perl -lane '
+	        /transcript_id "([^"]+)"/ or die "no transcript_id on $.";
+	        print join "\\t", (@F[0,1,2,3], $1)
+	    ' | \
+	    sort -k1V -k2n -k3n | \
+			perl !{tool} rrna_interval.txt >> rrna_interval.txt
+	'''
+}
+
+// seqMetrics process
+process seqMetrics {
+
+	label 'multiCore'
+
+	tag "seqMetrics: $sample"
+
+	publishDir path: joinPath(getDir('output', 'base_dir', params, canonPath = true),
+		getDir('output', 'bamqc_dir', params, canonPath = false)),
+		mode: "copy", saveAs: {
+			return joinPath("$sample", it)
+		}
+
+	input:
+	set val(sample), file(bam) from BAM_2SEQ_STATS
+	file fa from PICARD_SEQ_GENOME_FA.collect()
+	file "rrna_interval.txt" from RRNA.collect()
+	file "refFlat.txt" from REFFlat_FOUT.collect()
+
+	output:
+	file "${sample}.CollectRnaSeqMetrics.txt" into SEQ_STATS
+
+	when:
+	action.call(params, 'compute', 'run_bamqc_boolean', 'boolean')
+
+	script:
+	tmp_dir = getDir('intermediates', 'base_dir', params, canonPath = true)
+	"""
+		picard CollectRnaSeqMetrics \
+	    VALIDATION_STRINGENCY=LENIENT \
+	    MAX_RECORDS_IN_RAM=4000000 \
+	    STRAND_SPECIFICITY=NONE \
+	    MINIMUM_LENGTH=500 \
+	    RRNA_FRAGMENT_PERCENTAGE=0.8 \
+	    METRIC_ACCUMULATION_LEVEL=ALL_READS \
+	    R=${fa} \
+	    REF_FLAT=refFlat.txt \
+	    RIBOSOMAL_INTERVALS=rrna_interval.txt \
+	    INPUT=${bam} \
+	    OUTPUT=${sample}.CollectRnaSeqMetrics.txt \
+	    TMP_DIR=${tmp_dir}
+	"""
+}
 
 /*
-* Step 4: salmon quantification
-*/
+ * Step 4: featureCounts
+ */
+process featureCounts {
+
+	label 'multiCore'
+
+	tag "featureCounts: $sample"
+
+	publishDir path: joinPath(getDir('output', 'base_dir', params, canonPath = true),
+		getDir('output', 'featurecounts_dir', params, canonPath = false)),
+		mode: "copy", saveAs: {
+					return joinPath("$sample", it)
+		}
+
+	input:
+	set val(sample), file(bam) from BAM_2CNT
+	file gtf from CNT_GTF.collect()
+
+	output:
+	file "${sample}.exon.geneID.txt" into CNT_FOUT
+
+	when:
+	action.call(params, 'compute', 'run_featurecounts_boolean', 'boolean')
+
+	shell:
+	threads = task.cpus
+
+	if (!strand) {
+		throw new IllegalArgumentException("For featureCounts, strand variable is unset or empty.");
+	}
+
+	switch(strand) {
+		case 'fr-firststrand':
+			strand_flag = '-s 2'
+			break
+		case 'fr-secondstrand':
+			strand_flag = '-s 1'
+			break
+		case 'fr-unstranded':
+			strand_flag = '-s 0'
+			break
+		default:
+			throw new IllegalArgumentException("For featureCounts, strand variable is not matched to tophat specification: " + strand);
+	}
+
+	tmp_dir = getDir('intermediates', 'base_dir', params, canonPath = true)
+	'''
+		PE=`samtools view -c -f 1 !{bam}`
+
+		if [[ ${PE} -gt 0 ]]; then
+			PE_FLAG="-p"
+		elif [[ ${PE} -eq 0 ]]; then
+			PE_FLAG=""
+		else
+			echo "Unknown PE/SE setting ${PE}"
+			exit 1
+		fi
+
+ 		featureCounts ${PE_FLAG} -T !{threads} \
+			-t exon \
+			-g gene_id \
+			-a !{gtf} \
+			-o !{sample}.exon.geneID.txt \
+			--tmpDir !{tmp_dir} \
+			!{bam}
+	'''
+}
+
+/*
+ * Step 5: salmon quantification
+ */
 // salmon quantification process
 // run_salmon_index (true): run salmon index
 // run salmon_index (false) && run salmon (true): load salmon index
@@ -579,19 +855,24 @@ process salmonQuant {
   }
 }
 
-workflow.onComplete {
+/*
+ * Last Step: multiqc
+ */
 
-	log.info "Pipeline execution summary"
-	log.info "---------------------------"
-	log.info "Completed at: ${workflow.complete}"
-	log.info "Duration    : ${workflow.duration}"
-	log.info "Success     : ${workflow.success}"
-	log.info "workDir     : ${workflow.workDir}"
-	log.info "exit status : ${workflow.success ? 'OK' : 'failed' }"
-	log.info "Error report: ${workflow.errorReport ?: '-'}"
 
-}
-
-workflow.onError {
-	log.info "Oops... Pipeline execution stopped with the following message: ${workflow.errorMessage}"
-}
+// workflow.onComplete {
+//
+// 	log.info "Pipeline execution summary"
+// 	log.info "---------------------------"
+// 	log.info "Completed at: ${workflow.complete}"
+// 	log.info "Duration    : ${workflow.duration}"
+// 	log.info "Success     : ${workflow.success}"
+// 	log.info "workDir     : ${workflow.workDir}"
+// 	log.info "exit status : ${workflow.success ? 'OK' : 'failed' }"
+// 	log.info "Error report: ${workflow.errorReport ?: '-'}"
+//
+// }
+//
+// workflow.onError {
+// 	log.error "Oops... Pipeline execution stopped with the following message: ${workflow.errorMessage}"
+// }
