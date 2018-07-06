@@ -26,8 +26,16 @@ process {
 
 ## Parameter file (*.yml)
 
-## Basic useage
+## Local usage
 As in the call_nf.sh, to run the RNA-seq pipeline locally,
 ```
 nextflow rna.nf -c rna_local.config -params-file project_local.yml
 ```
+or with more complexity,
+
+```
+nextflow rna.nf -c rna_local.config -params-file project_local.yml -with-trace -with-timeline -with-dag flowchart.html
+```
+
+## HPC usage
+To be continued.
