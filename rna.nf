@@ -872,19 +872,19 @@ process salmonQuant {
  */
 
 
-// workflow.onComplete {
-//
-// 	log.info "Pipeline execution summary"
-// 	log.info "---------------------------"
-// 	log.info "Completed at: ${workflow.complete}"
-// 	log.info "Duration    : ${workflow.duration}"
-// 	log.info "Success     : ${workflow.success}"
-// 	log.info "workDir     : ${workflow.workDir}"
-// 	log.info "exit status : ${workflow.success ? 'OK' : 'failed' }"
-// 	log.info "Error report: ${workflow.errorReport ?: '-'}"
-//
-// }
-//
-// workflow.onError {
-// 	log.error "Oops... Pipeline execution stopped with the following message: ${workflow.errorMessage}"
-// }
+workflow.onComplete {
+
+	log.info "Pipeline execution summary"
+	log.info "---------------------------"
+	log.info "Completed at: ${workflow.complete}"
+	log.info "Duration    : ${workflow.duration}"
+	log.info "Success     : ${workflow.success}"
+	log.info "workDir     : ${workflow.workDir}"
+	log.info "exit status : ${workflow.success ? 'OK' : 'failed' }"
+	log.info "Error report: ${workflow.errorReport ?: '-'}"
+
+}
+
+workflow.onError {
+	log.error "Oops... Pipeline execution stopped with the following message: ${workflow.errorMessage}"
+}
