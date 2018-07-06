@@ -161,6 +161,18 @@ if (!(strand instanceof String && strand in ['fr-unstranded', 'fr-firststrand', 
 }
 
 /*
+ * sanity check for starAlign and tophatAlign
+ */
+ compute_staralign = action.call(params, 'compute', 'run_star_boolean', 'boolean')
+ compute_tophatalign = action.call(params, 'compute', 'run_tophat_boolean', 'boolean')
+
+ if ( ! (compute_staralign ^ compute_tophatalign | ((!compute_staralign) && (!compute_tophatalign)) )) {
+
+ 	throw new IllegalArgumentException("run_star_boolean and run_tophat_boolean must be mutually exclusive.")
+
+ }
+
+/*
  * Process reads
  */
 LIB_RUN_LOCAL_FASTQS = Channel.from(
