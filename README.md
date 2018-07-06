@@ -34,7 +34,12 @@ nextflow rna.nf -c rna_local.config -params-file project_local.yml
 or with more complexity,
 
 ```
-nextflow rna.nf -c rna_local.config -params-file project_local.yml -with-trace -with-timeline -with-dag flowchart.html
+nextflow rna.nf \
+	-c rna_local.config \
+	-params-file project_local.yml \
+	-with-trace \
+	-with-timeline \
+	-with-dag flowchart.html
 ```
 
 ## HPC usage
